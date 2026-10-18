@@ -155,6 +155,13 @@ pub fn generate_legal_moves(board: &mut Board) -> Vec<Move> {
     list
 }
 
+/// 둘 차례인 쪽의 킹이 체크 중인가
+pub fn in_check(board: &Board) -> bool {
+    let king_sq = board.pieces[board.side as usize][Piece::King as usize].trailing_zeros() as u8;
+    
+    is_attacked(board, king_sq, board.side.flip())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

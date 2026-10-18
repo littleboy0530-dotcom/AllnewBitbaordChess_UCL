@@ -6,9 +6,14 @@ mod movegen;
 mod makemoves;
 mod perft;
 mod zobrist;
+mod eval;
+mod search;
+mod uci;
 
+use std::io::{self, BufRead, Write};
 use std::time::Instant;
 use board::Board;
+use uci::Uci;
 
 fn perft_bench() {
     let cases = [
@@ -26,5 +31,20 @@ fn perft_bench() {
 }
 
 fn main() {
-    perft_bench()
+    // `cargo run --release -- bench`면 perft 벤치마크, 아니면 UCI 모드
+    if std::env::args().any(|a| a == "bench") {
+        perft_bench();
+        return;
+    }
+
+    let mut uci = uci::Uci::new();
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let Ok(line) = line else { break };
+        for out in uci.handle_line(line.trim()) {
+            println!("{}", out);
+        }
+        io::stdout().flush().unwrap();
+        if uci.quit { break; }
+    }
 }
