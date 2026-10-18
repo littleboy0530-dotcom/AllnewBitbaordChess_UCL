@@ -137,6 +137,23 @@ fn generate_castling(board: &Board, list: &mut Vec<Move>) {
         list.push(Move::new(e, c, QUEEN_CASTLE));
     }
 }
+/// 합법수만 만든다
+pub fn generate_legal_moves(board: &mut Board) -> Vec<Move> {
+    let mut list = Vec::with_capacity(20); 
+    generate_moves(board, &mut list);
+
+    list.retain(|mv| {
+        
+        board.make_move(*mv);
+        let king_sq = board.pieces[board.side.flip() as usize][Piece::King as usize].trailing_zeros() as Square;
+        let is_check = is_attacked(board, king_sq, board.side);
+        board.unmake_move();
+
+        !is_check
+    });
+
+    list
+}
 
 #[cfg(test)]
 mod tests {
