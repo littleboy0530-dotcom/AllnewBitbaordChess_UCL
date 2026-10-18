@@ -5,6 +5,7 @@ mod moves;
 mod movegen;
 mod makemoves;
 mod perft;
+mod zobrist;
 
 use std::time::Instant;
 use board::Board;

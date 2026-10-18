@@ -1,6 +1,7 @@
 use crate::board::*;
 use crate::moves::*;
 use crate::types::*;
+use crate::zobrist::KEYS;
 
 /// 칸별 캐슬링 마스크: 이 칸에서 출발하거나 이 칸에 도착하면 남는 권리
 const CASTLE_MASK: [u8; 64] = {
@@ -33,7 +34,8 @@ impl Board {
 
         let undo = Undo { mv: mv, captured: captured, 
             castling: self.castling, ep: self.ep, 
-            halfmove: self.halfmove, fullmove: self.fullmove 
+            halfmove: self.halfmove, fullmove: self.fullmove,
+            hash: self.hash, 
         };
         self.history.push(undo);
         
@@ -62,16 +64,30 @@ impl Board {
 
         }
 
+        //기존 해시 끄기
+        self.hash ^= KEYS.castling[self.castling as usize];
+        if let Some(ep) = self.ep {
+            self.hash ^= KEYS.ep_file[file_of(ep) as usize];
+        }
+
         //상태 갱신
         self.ep = if mv.flag() == DOUBLE_PUSH {Some((mv.from()+mv.to())/2)}else{None};
+        if let Some(ep) = self.ep {
+            self.hash ^= KEYS.ep_file[file_of(ep) as usize];
+        }
+
         self.castling &= CASTLE_MASK[mv.from() as usize] & CASTLE_MASK[mv.to() as usize];
+        self.hash ^= KEYS.castling[self.castling as usize];
+
         self.halfmove = if Piece::Pawn == piece || mv.is_capture() {
             0
         }else {
             self.halfmove +1
         };
         if us == Color::Black {self.fullmove += 1;}
+
         self.side = them;
+        self.hash ^= KEYS.side;
     }
 
     pub fn unmake_move(&mut self) {
@@ -102,6 +118,8 @@ impl Board {
             let captured_sq = if undo.mv.flag() == EP_CAPTURE { ep_victim(us, undo.mv.to()) } else { undo.mv.to() };
             self.put_piece(us.flip(), captured, captured_sq);
         }
+
+        self.hash = undo.hash;
     }
 }
 

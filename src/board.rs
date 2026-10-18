@@ -1,5 +1,6 @@
 use crate::types::*;
 use crate::moves::Move;
+use crate::zobrist::KEYS;
 
 // 캐슬링 권리 비트
 pub const WK: u8 = 1; // 백 킹사이드 (K)
@@ -18,13 +19,15 @@ pub struct Board {
     pub halfmove: u8,
     pub fullmove: u16,
     pub history: Vec<Undo>,
+    pub hash: u64,
 }
 
 impl Board {
     /// 아무것도 없는 보드 (백 차례, 전체 수 1)
     pub fn empty() -> Board { 
         Board{pieces: [[0;6];2], occupied: [0;2], mailbox: [None; 64],
-        side: Color::White, castling: 0, ep: None, halfmove: 0, fullmove: 1, history:Vec::new()}
+        side: Color::White, castling: 0, ep: None, halfmove: 0, fullmove: 1, 
+        history:Vec::new(), hash: 0}
     }
 
     /// 기물 놓기: pieces, occupied, mailbox를 한 번에 갱신
@@ -32,6 +35,7 @@ impl Board {
         self.pieces[color as usize][piece as usize] |= bit(sq);
         self.occupied[color as usize] |= bit(sq);
         self.mailbox[sq as usize] = Some(piece);
+        self.hash ^= KEYS.pieces[color as usize][piece as usize][sq as usize];
     }
 
     /// 그 칸의 (색, 기물). 빈칸이면 None
@@ -110,6 +114,8 @@ impl Board {
         //수 카운터
         b.halfmove = parts.get(4).and_then(|&s| s.parse().ok()).unwrap_or(0);
         b.fullmove = parts.get(5).and_then(|&s| s.parse().ok()).unwrap_or(1);
+
+        b.hash = b.compute_hash();
 
         Ok(b)
     }
@@ -191,6 +197,7 @@ impl Board {
         self.pieces[color as usize][piece as usize] &= !bit(sq);
         self.occupied[color as usize] &= !bit(sq);
         self.mailbox[sq as usize] = None;
+        self.hash ^= KEYS.pieces[color as usize][piece as usize][sq as usize];
     }
 
     /// from의 기물을 to로 옮기기 (to는 비어 있어야 함)
@@ -211,6 +218,7 @@ pub struct Undo {
     pub ep: Option<Square>,
     pub halfmove: u8,
     pub fullmove: u16,
+    pub hash: u64,
 }
 
 #[cfg(test)]
