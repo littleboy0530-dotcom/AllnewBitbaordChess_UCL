@@ -2,10 +2,11 @@ use crate::board::Board;
 use crate::moves::Move;
 use crate::movegen::{generate_legal_moves, in_check};
 use crate::search::{iterative_deepening, Limits, MATE};
+use crate::tt::TranspositionTable;
 use crate::types::Color;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -17,6 +18,8 @@ const MAX_DEPTH: u32 = 64;
 const MOVE_OVERHEAD_MS: u64 = 30;
 /// movestogo가 없을 때 가정하는 남은 수
 const DEFAULT_MOVES_TO_GO: u64 = 30;
+/// 전치 테이블 크기: 칸 2^20개 (약 100만 칸)
+const TT_BITS: u32 = 20;
 
 /// UCI `go` 명령의 파라미터
 #[derive(Default, Debug, PartialEq)]
@@ -43,11 +46,19 @@ pub struct Uci {
     /// 탐색 스레드가 info·bestmove를 보내는 출력 통로
     out: Sender<String>,
     search: Option<SearchJob>,
+    /// 대국 내내 유지하는 전치 테이블 (탐색 스레드와 함께 쓰므로 Mutex로 감쌈)
+    tt: Arc<Mutex<TranspositionTable>>,
 }
 
 impl Uci {
     pub fn new(out: Sender<String>) -> Uci {
-        Uci { board: Board::from_fen(START_FEN).unwrap(), quit: false, out, search: None }
+        Uci {
+            board: Board::from_fen(START_FEN).unwrap(),
+            quit: false,
+            out,
+            search: None,
+            tt: Arc::new(Mutex::new(TranspositionTable::new(TT_BITS))),
+        }
     }
 
     /// 진행 중인 탐색에 정지 신호를 보내고 끝날 때까지 기다린다 (bestmove는 탐색 스레드가 보냄)
@@ -83,6 +94,7 @@ impl Uci {
             "ucinewgame" => {
                 self.stop_search();
                 self.board = Board::from_fen(START_FEN).unwrap();
+                self.tt.lock().unwrap().clear();   // 지난 대국의 기록은 필요 없음
                 vec![]
             },
             "position" => {
@@ -155,9 +167,11 @@ impl Uci {
         let stop_seen = Arc::clone(&stop);
         let mut board = self.board.clone();   // 탐색 스레드 전용 보드
         let out = self.out.clone();
+        let tt = Arc::clone(&self.tt);
 
         let handle = thread::spawn(move || {
-            let result = iterative_deepening(&mut board, &limits, |d, r| {
+            let mut tt = tt.lock().unwrap();   // 탐색하는 동안 이 스레드만 씀
+            let result = iterative_deepening(&mut board, &limits, &mut tt, |d, r| {
                 let nps = if r.time_ms > 0 { r.nodes * 1000 / r.time_ms } else { 0 };
                 let _ = out.send(format!("info depth {} score {} nodes {} time {} nps {}",
                     d, score_to_uci(r.score), r.nodes, r.time_ms, nps));

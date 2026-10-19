@@ -9,6 +9,7 @@ mod zobrist;
 mod eval;
 mod search;
 mod uci;
+mod tt;
 
 use std::io::{self, BufRead, Write};
 use std::sync::mpsc;

@@ -3,6 +3,7 @@ use crate::eval::evaluate;
 use crate::moves::{EP_CAPTURE, Move};
 use crate::movegen::{generate_legal_moves, in_check};
 use crate::types::Piece;
+use crate::tt::{Bound, TranspositionTable, score_from_tt, score_to_tt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,7 +59,9 @@ impl SearchState {
 
 /// 깊이 depth까지 탐색해서 최선의 수를 고른다 (시간 제한 없음)
 pub fn search(board: &mut Board, depth: u32) -> SearchResult {
-    search_root(board, depth, None, &mut SearchState::new(None))
+    // 한 번 쓰고 마는 탐색이라 작은 표를 새로 만들어 쓴다
+    let mut tt = TranspositionTable::new(16);
+    search_root(board, depth, None, &mut SearchState::new(None), &mut tt)
 }
 
 /// 깊이 1부터 limits.depth까지 차례로 탐색한다 (반복 심화)
@@ -67,6 +70,7 @@ pub fn search(board: &mut Board, depth: u32) -> SearchResult {
 pub fn iterative_deepening(
     board: &mut Board,
     limits: &Limits,
+    tt: &mut TranspositionTable,
     mut report: impl FnMut(u32, &SearchResult),
 ) -> SearchResult {
     let start = Instant::now();
@@ -88,7 +92,7 @@ pub fn iterative_deepening(
             st.stop = limits.stop.clone();
         }
         // 이전 깊이의 최선수를 가장 먼저 탐색 → α-β가 더 많이 잘라 냄
-        let mut r = search_root(board, depth, last.best, &mut st);
+        let mut r = search_root(board, depth, last.best, &mut st, tt);
         if st.stopped {
             break;   // 중간에 멈춘 깊이는 아직 못 본 수가 있어 믿을 수 없음 → 버림
         }
@@ -114,7 +118,7 @@ pub fn iterative_deepening(
 }
 
 /// first가 있으면 그 수를 가장 먼저 탐색한다
-fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut SearchState) -> SearchResult {
+fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut SearchState, tt: &mut TranspositionTable) -> SearchResult {
     let mut list = generate_legal_moves(board);
     let mut best = None;
     let mut alpha = -INF;
@@ -131,7 +135,7 @@ fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut Sear
 
     for mv in list {
         board.make_move(mv);
-        let score = -negamax(board, depth - 1, 1, -beta, -alpha, st);
+        let score = -negamax(board, depth - 1, 1, -beta, -alpha, st, tt);
         board.unmake_move();
         if st.stopped {
             break;   // 멈춘 뒤의 점수는 의미 없음 (보드는 위에서 이미 되돌림)
@@ -147,9 +151,10 @@ fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut Sear
 }
 
 /// 네가맥스 + α-β. 둘 차례인 쪽 기준 점수를 돌려준다
-fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, st: &mut SearchState) -> i32 {
+fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, st: &mut SearchState, tt: &mut TranspositionTable) -> i32 {
     st.nodes += 1;
     st.check_time();
+    
     if st.stopped {
         return 0;   // 이 점수는 어차피 버려짐
     }
@@ -158,7 +163,21 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
         return quiescence(board, ply, alpha, beta, st)
     }
 
-    let list = generate_legal_moves(board);
+    let mut tt_move = None;
+    if let Some(entry) = tt.probe(board.hash) {
+        tt_move = entry.best;   // 깊이가 부족해도 수는 정렬에 쓸 수 있음
+        if entry.depth >= depth {
+            let score = score_from_tt(entry.score, ply);
+            match entry.bound {
+                Bound::Exact => return score,
+                Bound::Lower => if score >= beta {return score},
+                Bound::Upper => if score <= alpha {return score},
+            }
+        }
+    }
+
+
+    let mut list = generate_legal_moves(board);
     if list.is_empty() {
         if in_check(board) {
             return -MATE + ply
@@ -166,16 +185,24 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
             return 0
         }
     }
+    if let Some(m) = tt_move {
+        if let Some(i) = list.iter().position(|&mv| mv == m) {
+            list.swap(0, i);
+        }
+    }
 
+    let alpha_origin = alpha;
     let mut best = -INF;
+    let mut best_move = None;
 
     for mv in list {
         board.make_move(mv);
-        let score = -negamax(board, depth -1, ply +1, -beta, -alpha, st);
+        let score = -negamax(board, depth -1, ply +1, -beta, -alpha, st, tt);
         board.unmake_move();
 
         if score > best {
             best = score;
+            best_move = Some(mv);
         }
         if score > alpha {
             alpha = score;
@@ -184,6 +211,18 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
             break;
         }
     }
+
+    if st.stopped {return 0}
+
+    let bound = if best <= alpha_origin {
+        Bound::Upper
+    }else if best >= beta {
+        Bound::Lower
+    }else {
+        Bound::Exact
+    };
+
+    tt.store(board.hash, depth, score_to_tt(best, ply), bound, best_move);
 
     best
 }
@@ -373,7 +412,7 @@ mod tests {
     fn deepening_reports_every_depth() {
         let mut b = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
         let mut depths = Vec::new();
-        iterative_deepening(&mut b, &Limits::depth(4), |d, _| depths.push(d));
+        iterative_deepening(&mut b, &Limits::depth(4), &mut TranspositionTable::new(16), |d, _| depths.push(d));
         assert_eq!(depths, vec![1, 2, 3, 4]);
     }
 
@@ -387,7 +426,7 @@ mod tests {
             let mut b = Board::from_fen(fen).unwrap();
             // 깊이 2: Kiwipete 깊이 3은 디버그 빌드에서 수십 초가 걸림 (수 정렬이 생기면 다시 늘릴 것)
             let fixed = search(&mut b, 2).score;
-            let deep = iterative_deepening(&mut b, &Limits::depth(2), |_, _| {}).score;
+            let deep = iterative_deepening(&mut b, &Limits::depth(2), &mut TranspositionTable::new(16), |_, _| {}).score;
             assert_eq!(fixed, deep, "{}", fen);
             assert_eq!(b.to_fen(), fen);
         }
@@ -398,7 +437,7 @@ mod tests {
         // 1수 메이트: 깊이 2에서 메이트를 찾고 더 깊이 가지 않아야 함
         let mut b = Board::from_fen("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1").unwrap();
         let mut depths = Vec::new();
-        let r = iterative_deepening(&mut b, &Limits::depth(8), |d, _| depths.push(d));
+        let r = iterative_deepening(&mut b, &Limits::depth(8), &mut TranspositionTable::new(16), |d, _| depths.push(d));
         assert_eq!(r.best.unwrap().to_uci(), "a1a8");
         assert_eq!(r.score, MATE - 1);
         assert_eq!(depths, vec![1, 2]);
@@ -408,7 +447,7 @@ mod tests {
     fn deepening_nodes_are_cumulative() {
         let mut b = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
         let mut nodes = Vec::new();
-        iterative_deepening(&mut b, &Limits::depth(3), |_, r| nodes.push(r.nodes));
+        iterative_deepening(&mut b, &Limits::depth(3), &mut TranspositionTable::new(16), |_, r| nodes.push(r.nodes));
         assert!(nodes.windows(2).all(|w| w[0] < w[1]), "{:?}", nodes);
     }
 
@@ -418,7 +457,7 @@ mod tests {
         let mut b = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
         let normal = search(&mut b, 3).score;
         let h2h3 = generate_legal_moves(&mut b).into_iter().find(|m| m.to_uci() == "h2h3");
-        assert_eq!(search_root(&mut b, 3, h2h3, &mut SearchState::new(None)).score, normal);
+        assert_eq!(search_root(&mut b, 3, h2h3, &mut SearchState::new(None), &mut TranspositionTable::new(16)).score, normal);
     }
 
     #[test]
@@ -427,7 +466,7 @@ mod tests {
         let mut b = Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1").unwrap();
         let fen = b.to_fen();
         let mut depths = Vec::new();
-        let r = iterative_deepening(&mut b, &Limits { depth: 64, time: Some(Duration::from_millis(0)), stop: None }, |d, _| depths.push(d));
+        let r = iterative_deepening(&mut b, &Limits { depth: 64, time: Some(Duration::from_millis(0)), stop: None }, &mut TranspositionTable::new(16), |d, _| depths.push(d));
         assert!(r.best.is_some());
         assert_eq!(depths, vec![1]);
         assert_eq!(b.to_fen(), fen, "중단 후에도 보드가 원래대로여야 함");
@@ -439,7 +478,7 @@ mod tests {
         let fen = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
         let mut b = Board::from_fen(fen).unwrap();
         let start = Instant::now();
-        iterative_deepening(&mut b, &Limits { depth: 64, time: Some(Duration::from_millis(100)), stop: None }, |_, _| {});
+        iterative_deepening(&mut b, &Limits { depth: 64, time: Some(Duration::from_millis(100)), stop: None }, &mut TranspositionTable::new(16), |_, _| {});
         assert!(start.elapsed() < Duration::from_secs(3), "{:?}", start.elapsed());
         assert_eq!(b.to_fen(), fen);
         assert!(b.history.is_empty());
@@ -451,7 +490,7 @@ mod tests {
         let mut b = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
         let stop = Arc::new(AtomicBool::new(true));
         let mut depths = Vec::new();
-        let r = iterative_deepening(&mut b, &Limits { depth: 64, time: None, stop: Some(stop) }, |d, _| depths.push(d));
+        let r = iterative_deepening(&mut b, &Limits { depth: 64, time: None, stop: Some(stop) }, &mut TranspositionTable::new(16), |d, _| depths.push(d));
         assert_eq!(depths, vec![1]);
         assert!(r.best.is_some());
     }
@@ -464,5 +503,33 @@ mod tests {
         let pxq = *moves.iter().find(|m| m.to_uci() == "e4d5").unwrap();
         let qxp = *moves.iter().find(|m| m.to_uci() == "b3b7").unwrap();
         assert!(mvv_lva(&b, pxq) > mvv_lva(&b, qxp));
+    }
+
+    #[test]
+    fn tt_makes_second_search_cheaper() {
+        // 같은 국면을 같은 TT로 다시 탐색하면 노드가 크게 줄어야 함
+        let mut b = Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1").unwrap();
+        let mut tt = TranspositionTable::new(18);
+        let first = iterative_deepening(&mut b, &Limits::depth(3), &mut tt, |_, _| {});
+        let second = iterative_deepening(&mut b, &Limits::depth(3), &mut tt, |_, _| {});
+        assert!(second.nodes * 2 < first.nodes, "첫 탐색 {} / 두 번째 {}", first.nodes, second.nodes);
+    }
+
+    #[test]
+    fn mate_distance_stays_correct_across_moves() {
+        // 같은 TT를 쓰며 수를 진행해도 메이트까지 남은 수가 정확히 줄어야 함
+        let mut b = Board::from_fen("k7/8/2K5/8/8/8/8/7R w - - 0 1").unwrap();
+        let mut tt = TranspositionTable::new(18);
+
+        let r1 = iterative_deepening(&mut b, &Limits::depth(4), &mut tt, |_, _| {});
+        assert_eq!(r1.score, MATE - 3);                  // 백: 2수 메이트
+        b.make_move(r1.best.unwrap());
+
+        let r2 = iterative_deepening(&mut b, &Limits::depth(3), &mut tt, |_, _| {});
+        assert_eq!(r2.score, -MATE + 2);                 // 흑: 1수 뒤 메이트당함
+        b.make_move(r2.best.unwrap());
+
+        let r3 = iterative_deepening(&mut b, &Limits::depth(2), &mut tt, |_, _| {});
+        assert_eq!(r3.score, MATE - 1);                  // 백: 1수 메이트
     }
 }
