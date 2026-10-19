@@ -11,6 +11,8 @@ mod search;
 mod uci;
 
 use std::io::{self, BufRead, Write};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Instant;
 use board::Board;
 use uci::Uci;
@@ -37,14 +39,31 @@ fn main() {
         return;
     }
 
-    let mut uci = uci::Uci::new();
+    // 출력은 전부 이 통로로 모아서 출력 스레드 하나가 내보낸다
+    // (명령 응답과 탐색 스레드의 info·bestmove가 한 줄씩 섞이지 않게)
+    let (tx, rx) = mpsc::channel::<String>();
+    let printer = thread::spawn(move || {
+        let stdout = io::stdout();
+        for line in rx {
+            let mut out = stdout.lock();
+            let _ = writeln!(out, "{}", line);
+            let _ = out.flush();
+        }
+    });
+
+    let mut uci = Uci::new(tx.clone());
     let stdin = io::stdin();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         for out in uci.handle_line(line.trim()) {
-            println!("{}", out);
+            let _ = tx.send(out);
         }
-        io::stdout().flush().unwrap();
         if uci.quit { break; }
     }
+
+    // 입력이 끝났으면(quit 없이) 진행 중인 탐색은 끝까지 마치고 bestmove를 보낸다
+    uci.wait_search();
+    drop(uci);
+    drop(tx);            // 보내는 쪽이 모두 사라지면 출력 스레드가 끝남
+    let _ = printer.join();
 }
