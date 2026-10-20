@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 pub const INF: i32 = 1_000_000;
 pub const MATE: i32 = 100_000;
 
+const MAX_PLY: usize = 128;
+
 /// 탐색을 언제 멈출지 정하는 조건들
 pub struct Limits {
     pub depth: u32,                     // 최대 깊이
@@ -38,11 +40,12 @@ pub struct SearchState {
     pub deadline: Option<Instant>,       // None이면 시간 제한 없음
     pub stop: Option<Arc<AtomicBool>>,   // 바깥에서 켜는 정지 신호
     pub stopped: bool,                   // 시간 초과나 stop으로 중단했는가
+    pub killers: [[Option<Move>; 2]; MAX_PLY],//킬러 무브(킬러 휴리스틱용)
 }
 
 impl SearchState {
     pub fn new(deadline: Option<Instant>) -> SearchState {
-        SearchState { nodes: 0, deadline, stop: None, stopped: false }
+        SearchState { nodes: 0, deadline, stop: None, stopped: false , killers: [[None;2];MAX_PLY]}
     }
 
     /// 2048 노드마다 시계와 정지 신호를 확인해서, 멈춰야 하면 stopped를 켠다
@@ -78,10 +81,11 @@ pub fn iterative_deepening(
     let deadline = time_limit.map(|t| start + t);
     let mut total_nodes = 0;
     let mut last = SearchResult { best: None, score: 0, nodes: 0, time_ms: 0 };
+    let mut st = SearchState::new(None);
 
     for depth in 1..=limits.depth.max(1) {
         // 깊이 1은 시간·stop과 상관없이 끝까지 (둘 수가 하나는 있어야 하므로)
-        let mut st = SearchState::new(None);
+        st.nodes = 0;
         if depth > 1 {
             // 이미 stop이 왔으면 다음 깊이는 시작하지 않음
             // (얕은 깊이는 2048 노드 전에 끝나서 탐색 중 확인에 걸리지 않을 수 있음)
@@ -123,7 +127,7 @@ fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut Sear
     let mut best = None;
     let mut alpha = -INF;
     let beta = INF;
-    order_moves(board, &mut list, first);
+    order_moves(board, &mut list, first, [None;2]);
     if list.is_empty() {
         let score = if in_check(board) { -MATE } else { 0 };
         return SearchResult { best, score, nodes: st.nodes, time_ms: 0 };
@@ -176,7 +180,7 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
     // 의사 합법 수를 정렬하고, 합법성은 둘 때 확인 (β 컷 뒤의 수는 검사하지 않음)
     let mut list = Vec::with_capacity(64);
     generate_moves(board, &mut list);
-    order_moves(board, &mut list, tt_move);
+    order_moves(board, &mut list, tt_move, st.killers[ply as usize]);
 
     let alpha_origin = alpha;
     let mut best = -INF;
@@ -201,6 +205,10 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
             alpha = score;
         }
         if alpha >= beta {
+            if !mv.is_capture() && st.killers[ply as usize][0] != Some(mv) {
+                st.killers[ply as usize][1] = st.killers[ply as usize][0];
+                st.killers[ply as usize][0] = Some(mv);
+            }
             break;
         }
     }
@@ -249,7 +257,7 @@ fn quiescence(board: &mut Board, ply: i32, mut alpha: i32, beta: i32, st: &mut S
     let mut captures = Vec::with_capacity(64);
     generate_moves(board, &mut captures);
     captures.retain(|&m| m.is_capture());
-    order_moves(board, &mut captures, None);
+    order_moves(board, &mut captures, None, [None;2]);
 
     for mv in captures {
         board.make_move(mv);
@@ -279,23 +287,29 @@ fn quiescence(board: &mut Board, ply: i32, mut alpha: i32, beta: i32, st: &mut S
 const TT_MOVE_SCORE: i32 = 1_000_000;
 const CAPTURE_SCORE: i32 = 100_000;
 const QUEEN_PROMO_SCORE: i32 = 90_000;
+const KILLER_1_SCORE: i32 = 80_000;
+const KILLER_2_SCORE: i32 = 70_000;
 
 /// 정렬 점수: 클수록 먼저 탐색
-fn score_move(board: &Board, mv: Move, tt_move: Option<Move>) -> i32 {
+fn score_move(board: &Board, mv: Move, tt_move: Option<Move>, killers: [Option<Move>;2]) -> i32 {
     if tt_move == Some(mv) {
         TT_MOVE_SCORE
     }else if mv.is_capture() {
         CAPTURE_SCORE + mvv_lva(board, mv)
     }else if mv.promotion_piece() == Some(Piece::Queen) {
         QUEEN_PROMO_SCORE
+    }else if killers[0] == Some(mv) {
+        KILLER_1_SCORE
+    }else if killers[1] == Some(mv){
+        KILLER_2_SCORE
     }else{
         0
     }
 }
 
 /// 정렬 점수가 높은 순으로 정렬
-fn order_moves(board: &Board, moves: &mut Vec<Move>, tt_move: Option<Move>) {
-    moves.sort_by_cached_key(|&mv| -score_move(board, mv, tt_move));
+fn order_moves(board: &Board, moves: &mut Vec<Move>, tt_move: Option<Move>, killers: [Option<Move>;2]) {
+    moves.sort_by_cached_key(|&mv| -score_move(board, mv, tt_move, killers));
 }
 
 /// 캡처 정렬용 기물 가치 (폰, 나이트, 비숍, 룩, 퀸, 킹)
@@ -567,7 +581,7 @@ mod tests {
         let find = |moves: &Vec<Move>, uci: &str| *moves.iter().find(|m| m.to_uci() == uci).unwrap();
         let quiet = find(&moves, "e1f2");
 
-        order_moves(&b, &mut moves, Some(quiet));
+        order_moves(&b, &mut moves, Some(quiet), [None;2]);
         let pos = |uci: &str| moves.iter().position(|m| m.to_uci() == uci).unwrap();
 
         assert_eq!(pos("e1f2"), 0, "TT 수가 맨 앞");
@@ -582,7 +596,41 @@ mod tests {
         // 킹으로 폰 잡기(MVV-LVA 최저점)도 조용한 수보다 먼저
         let mut b = Board::from_fen("4k3/8/8/8/8/8/4p3/4K3 w - - 0 1").unwrap();
         let mut moves = generate_legal_moves(&mut b);
-        order_moves(&b, &mut moves, None);
+        order_moves(&b, &mut moves, None, [None;2]);
         assert_eq!(moves[0].to_uci(), "e1e2");
+    }
+
+    #[test]
+    fn killer_scores_between_promotion_and_quiet() {
+        let mut b = Board::from_fen("4k3/Pp6/8/3q4/4P3/1Q6/8/4K3 w - - 0 1").unwrap();
+        let mut moves = generate_legal_moves(&mut b);
+        let find = |uci: &str| *moves.iter().find(|m| m.to_uci() == uci).unwrap();
+        let (k1, k2) = (find("e1f2"), find("e1f1"));
+
+        order_moves(&b, &mut moves, None, [Some(k1), Some(k2)]);
+        let pos = |uci: &str| moves.iter().position(|m| m.to_uci() == uci).unwrap();
+
+        assert!(pos("a7a8q") < pos("e1f2"), "퀸 승격 > 킬러 1");
+        assert!(pos("e1f2") < pos("e1f1"), "킬러 1 > 킬러 2");
+        assert!(pos("e1f1") < pos("b3a4"), "킬러 2 > 일반 조용한 수");
+    }
+
+    #[test]
+    fn killers_are_quiet_and_distinct() {
+        let mut b = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+        let mut st = SearchState::new(None);
+        let mut tt = TranspositionTable::new(16);
+        for d in 1..=4 {
+            search_root(&mut b, d, None, &mut st, &mut tt);
+        }
+        let mut found = 0;
+        for k in st.killers.iter() {
+            if let Some(m) = k[0] {
+                found += 1;
+                assert!(!m.is_capture(), "캡처가 킬러로 저장됨: {}", m.to_uci());
+                assert_ne!(k[0], k[1], "두 칸이 같은 수");
+            }
+        }
+        assert!(found > 0, "킬러가 하나도 저장되지 않음");
     }
 }
