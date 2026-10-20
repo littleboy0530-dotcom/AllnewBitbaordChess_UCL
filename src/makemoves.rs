@@ -121,6 +121,32 @@ impl Board {
 
         self.hash = undo.hash;
     }
+
+    pub fn make_null_move(&mut self) {
+        let undo = Undo{mv: Move::new(0, 0, QUIET), captured: None,
+        castling: self.castling, ep: self.ep, 
+        halfmove: self.halfmove, fullmove: self.fullmove,
+        hash: self.hash};
+        self.history.push(undo);
+
+        if let Some(ep_sq) = self.ep {
+            self.hash ^= KEYS.ep_file[file_of(ep_sq) as usize];
+        }
+        self.ep = None;
+        self.halfmove += 1;
+        self.side = self.side.flip();
+        self.hash ^= KEYS.side
+    }
+    pub fn unmake_null_move(&mut self) {
+        let undo = self.history.pop().unwrap();
+        self.side = self.side.flip();
+
+        self.castling = undo.castling;
+        self.ep = undo.ep;
+        self.halfmove = undo.halfmove;
+        self.fullmove = undo.fullmove;
+        self.hash = undo.hash;
+    }
 }
 
 #[cfg(test)]
@@ -220,5 +246,21 @@ mod tests {
                 assert!(b.history.is_empty());
             }
         }
+    }
+        #[test]
+    fn null_move_round_trip() {
+        // 앙파상 칸이 있는 국면: 널 무브 후 ep가 지워지고, 되돌리면 원래대로
+        let fen = "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3";
+        let mut b = Board::from_fen(fen).unwrap();
+        let hash = b.hash;
+
+        b.make_null_move();
+        assert_eq!(b.side, Color::Black);
+        assert_eq!(b.ep, None);
+        assert_eq!(b.hash, b.compute_hash(), "널 무브 후 증분 해시가 틀림");
+
+        b.unmake_null_move();
+        assert_eq!(b.to_fen(), fen);
+        assert_eq!(b.hash, hash);
     }
 }

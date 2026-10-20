@@ -135,7 +135,7 @@ fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut Sear
 
     for mv in list {
         board.make_move(mv);
-        let score = -negamax(board, depth - 1, 1, -beta, -alpha, st, tt);
+        let score = -negamax(board, depth - 1, 1, -beta, -alpha, st, tt, true);
         board.unmake_move();
         if st.stopped {
             break;   // 멈춘 뒤의 점수는 의미 없음 (보드는 위에서 이미 되돌림)
@@ -151,7 +151,13 @@ fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut Sear
 }
 
 /// 네가맥스 + α-β. 둘 차례인 쪽 기준 점수를 돌려준다
-fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, st: &mut SearchState, tt: &mut TranspositionTable) -> i32 {
+fn negamax(board: &mut Board, 
+    depth: u32, ply: i32, 
+    mut alpha: i32, beta: i32, 
+    st: &mut SearchState, 
+    tt: &mut TranspositionTable,
+    allow_null: bool,
+    ) -> i32 {
     st.nodes += 1;
     st.check_time();
     
@@ -176,6 +182,21 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
         }
     }
 
+    const NULL_R: u32 = 2;
+
+    let in_check_now = in_check(board);   // 아래 메이트 판정에서도 재사용 가능
+
+    if allow_null && !in_check_now && depth >= 3 && has_non_pawn_material(board) {
+        board.make_null_move();
+        let score = -negamax(board, depth - 1 - NULL_R, ply + 1, -beta, -beta + 1, st, tt, false);
+        board.unmake_null_move();
+
+        if st.stopped { return 0; }
+        if score >= beta {
+            return beta// β 컷
+        }
+    }
+
 
     // 의사 합법 수를 정렬하고, 합법성은 둘 때 확인 (β 컷 뒤의 수는 검사하지 않음)
     let mut list = Vec::with_capacity(64);
@@ -194,7 +215,7 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
             continue;
         }
         legal_count += 1;
-        let score = -negamax(board, depth -1, ply +1, -beta, -alpha, st, tt);
+        let score = -negamax(board, depth -1, ply +1, -beta, -alpha, st, tt, true);
         board.unmake_move();
 
         if score > best {
@@ -215,7 +236,7 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
 
     // 둘 수 있는 수가 하나도 없었음: 메이트 또는 스테일메이트 (TT 저장 전에 판정)
     if legal_count == 0 {
-        return if in_check(board) { -MATE + ply } else { 0 };
+        return if in_check_now { -MATE + ply } else { 0 };
     }
 
     if st.stopped {return 0}
@@ -326,6 +347,17 @@ fn mvv_lva(board: &Board, mv: Move) -> i32 {
     let moving = board.mailbox[mv.from() as usize].unwrap();
 
     10*PIECE_VALUE[captured as usize] - PIECE_VALUE[moving as usize]
+}
+
+/// 둘 차례인 쪽에 나이트·비숍·룩·퀸이 하나라도 있는가
+fn has_non_pawn_material(board: &Board) -> bool {
+    for p in 1..=4 {
+        if board.pieces[board.side as usize][p] != 0 {
+            return true
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]
@@ -632,5 +664,13 @@ mod tests {
             }
         }
         assert!(found > 0, "킬러가 하나도 저장되지 않음");
+    }
+
+    #[test]
+    fn non_pawn_material_detection() {
+        assert!(has_non_pawn_material(&Board::from_fen("4k3/8/8/8/8/8/4P3/4KN2 w - - 0 1").unwrap()));
+        assert!(!has_non_pawn_material(&Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap()));
+        // 상대 기물은 상관없음: 둘 차례인 백에게는 폰뿐
+        assert!(!has_non_pawn_material(&Board::from_fen("3qk3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap()));
     }
 }
