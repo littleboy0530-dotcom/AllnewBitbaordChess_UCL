@@ -147,6 +147,18 @@ impl Board {
         self.fullmove = undo.fullmove;
         self.hash = undo.hash;
     }
+
+    /// 지금 국면이 halfmove 범위 안에서 전에 나온 적이 있는가 (같은 차례 기준)
+    pub fn is_repetition(&self) -> bool {
+        let n = self.history.len();
+        let limit = (self.halfmove as usize).min(n);
+
+        for k in (2..=limit).step_by(2) {
+            if self.history[n-k].hash == self.hash {return true}
+        }
+
+        false
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +274,27 @@ mod tests {
         b.unmake_null_move();
         assert_eq!(b.to_fen(), fen);
         assert_eq!(b.hash, hash);
+    }
+
+    #[test]
+    fn repetition_detected() {
+        let mut b = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+        for uci in ["g1f3", "g8f6", "f3g1"] {
+            play(&mut b, uci);
+            assert!(!b.is_repetition(), "{} 뒤에는 아직 반복 아님", uci);
+        }
+        play(&mut b, "f6g8");   // 시작 국면으로 돌아옴
+        assert!(b.is_repetition());
+    }
+
+    #[test]
+    fn no_repetition_across_pawn_move() {
+        let mut b = Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+        for uci in ["g1f3", "g8f6", "f3g1", "f6g8", "e2e4", "e7e5", "g1f3", "g8f6"] {
+            play(&mut b, uci);
+        }
+        // 폰이 움직였으니 halfmove가 0부터 다시 시작 → 그 이전 국면은 비교하지 않음
+        assert_eq!(b.halfmove, 2);
+        assert!(!b.is_repetition());
     }
 }

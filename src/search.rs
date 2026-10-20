@@ -165,6 +165,10 @@ fn negamax(board: &mut Board,
         return 0;   // 이 점수는 어차피 버려짐
     }
 
+    if board.is_repetition() || board.halfmove >= 100 {
+        return 0
+    }
+
     if depth == 0 {
         return quiescence(board, ply, alpha, beta, st)
     }
@@ -672,5 +676,28 @@ mod tests {
         assert!(!has_non_pawn_material(&Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap()));
         // 상대 기물은 상관없음: 둘 차례인 백에게는 폰뿐
         assert!(!has_non_pawn_material(&Board::from_fen("3qk3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap()));
+    }
+
+    #[test]
+    fn fifty_move_rule_is_draw() {
+        // 백 퀸 한 개 앞섬. halfmove 99면 어떤 수를 둬도 100이 되어 무승부
+        let r = run("4k3/8/8/8/8/8/8/3QK3 w - - 99 80", 2);
+        assert_eq!(r.score, 0);
+        let r = run("4k3/8/8/8/8/8/8/3QK3 w - - 0 80", 2);
+        assert!(r.score > 800);
+    }
+
+    #[test]
+    fn losing_side_takes_repetition() {
+        // 퀸이 없는 흑이 반복(Kf8-e8)으로 무승부를 만든다
+        let mut b = Board::from_fen("4k3/8/8/8/8/8/8/3QK3 w - - 0 1").unwrap();
+        for uci in ["d1d2", "e8f8", "d2d1"] {
+            let mv = *generate_legal_moves(&mut b).iter().find(|m| m.to_uci() == uci).unwrap();
+            b.make_move(mv);
+        }
+        // 흑 차례: Ke8을 두면 처음 국면(백 차례)이 다시 나옴 → 0점
+        let r = search(&mut b, 1);
+        assert_eq!(r.best.unwrap().to_uci(), "f8e8");
+        assert_eq!(r.score, 0);
     }
 }
