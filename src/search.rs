@@ -1,7 +1,7 @@
 use crate::board::Board;
 use crate::eval::evaluate;
 use crate::moves::{EP_CAPTURE, Move};
-use crate::movegen::{generate_legal_moves, in_check};
+use crate::movegen::{generate_legal_moves, generate_moves, in_check, last_move_was_legal};
 use crate::types::Piece;
 use crate::tt::{Bound, TranspositionTable, score_from_tt, score_to_tt};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,11 +123,7 @@ fn search_root(board: &mut Board, depth: u32, first: Option<Move>, st: &mut Sear
     let mut best = None;
     let mut alpha = -INF;
     let beta = INF;
-    if let Some(f) = first {
-        if let Some(i) = list.iter().position(|&m| m == f) {
-            list.swap(0, i);
-        }
-    }
+    order_moves(board, &mut list, first);
     if list.is_empty() {
         let score = if in_check(board) { -MATE } else { 0 };
         return SearchResult { best, score, nodes: st.nodes, time_ms: 0 };
@@ -177,26 +173,23 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
     }
 
 
-    let mut list = generate_legal_moves(board);
-    if list.is_empty() {
-        if in_check(board) {
-            return -MATE + ply
-        }else{
-            return 0
-        }
-    }
-    if let Some(m) = tt_move {
-        if let Some(i) = list.iter().position(|&mv| mv == m) {
-            list.swap(0, i);
-        }
-    }
+    // 의사 합법 수를 정렬하고, 합법성은 둘 때 확인 (β 컷 뒤의 수는 검사하지 않음)
+    let mut list = Vec::with_capacity(64);
+    generate_moves(board, &mut list);
+    order_moves(board, &mut list, tt_move);
 
     let alpha_origin = alpha;
     let mut best = -INF;
     let mut best_move = None;
+    let mut legal_count = 0;
 
     for mv in list {
         board.make_move(mv);
+        if !last_move_was_legal(board) {
+            board.unmake_move();
+            continue;
+        }
+        legal_count += 1;
         let score = -negamax(board, depth -1, ply +1, -beta, -alpha, st, tt);
         board.unmake_move();
 
@@ -212,6 +205,11 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
         }
     }
 
+    // 둘 수 있는 수가 하나도 없었음: 메이트 또는 스테일메이트 (TT 저장 전에 판정)
+    if legal_count == 0 {
+        return if in_check(board) { -MATE + ply } else { 0 };
+    }
+
     if st.stopped {return 0}
 
     let bound = if best <= alpha_origin {
@@ -225,22 +223,6 @@ fn negamax(board: &mut Board, depth: u32, ply: i32, mut alpha: i32, beta: i32, s
     tt.store(board.hash, depth, score_to_tt(best, ply), bound, best_move);
 
     best
-}
-
-/// 캡처 정렬용 기물 가치 (폰, 나이트, 비숍, 룩, 퀸, 킹)
-const PIECE_VALUE: [i32; 6] = [100, 320, 330, 500, 900, 20000];
-
-/// MVV-LVA 점수: 클수록 먼저 탐색
-fn mvv_lva(board: &Board, mv: Move) -> i32 {
-    debug_assert!(mv.is_capture(), "mvv_lva는 캡처에만 써야 함: {}", mv.to_uci());
-    let captured = if mv.flag() == EP_CAPTURE {
-        Piece::Pawn
-    }else{
-        board.mailbox[mv.to() as usize].unwrap()
-    };
-    let moving = board.mailbox[mv.from() as usize].unwrap();
-
-    10*PIECE_VALUE[captured as usize] - PIECE_VALUE[moving as usize]
 }
 
 /// 정적 탐색: 캡처만 이어서 탐색하고, 조용해지면 평가
@@ -263,12 +245,18 @@ fn quiescence(board: &mut Board, ply: i32, mut alpha: i32, beta: i32, st: &mut S
 
     let mut best = standard_pat;
 
-    let mut legal_mv = generate_legal_moves(board);
-    legal_mv.retain(|&m| m.is_capture());
-    legal_mv.sort_by_key(|&m| -mvv_lva(board, m) );
+    // 의사 합법 수에서 캡처만 남긴 뒤, 합법성은 둘 때 확인 (조용한 수는 검사도 안 함)
+    let mut captures = Vec::with_capacity(64);
+    generate_moves(board, &mut captures);
+    captures.retain(|&m| m.is_capture());
+    order_moves(board, &mut captures, None);
 
-    for mv in legal_mv {
+    for mv in captures {
         board.make_move(mv);
+        if !last_move_was_legal(board) {
+            board.unmake_move();
+            continue;
+        }
         let score = -quiescence(board, ply+1, -beta, -alpha, st);
         board.unmake_move();
 
@@ -286,6 +274,44 @@ fn quiescence(board: &mut Board, ply: i32, mut alpha: i32, beta: i32, st: &mut S
     }
 
     best
+}
+
+const TT_MOVE_SCORE: i32 = 1_000_000;
+const CAPTURE_SCORE: i32 = 100_000;
+const QUEEN_PROMO_SCORE: i32 = 90_000;
+
+/// 정렬 점수: 클수록 먼저 탐색
+fn score_move(board: &Board, mv: Move, tt_move: Option<Move>) -> i32 {
+    if tt_move == Some(mv) {
+        TT_MOVE_SCORE
+    }else if mv.is_capture() {
+        CAPTURE_SCORE + mvv_lva(board, mv)
+    }else if mv.promotion_piece() == Some(Piece::Queen) {
+        QUEEN_PROMO_SCORE
+    }else{
+        0
+    }
+}
+
+/// 정렬 점수가 높은 순으로 정렬
+fn order_moves(board: &Board, moves: &mut Vec<Move>, tt_move: Option<Move>) {
+    moves.sort_by_cached_key(|&mv| -score_move(board, mv, tt_move));
+}
+
+/// 캡처 정렬용 기물 가치 (폰, 나이트, 비숍, 룩, 퀸, 킹)
+const PIECE_VALUE: [i32; 6] = [100, 320, 330, 500, 900, 20000];
+
+/// MVV-LVA 점수: 클수록 먼저 탐색
+fn mvv_lva(board: &Board, mv: Move) -> i32 {
+    debug_assert!(mv.is_capture(), "mvv_lva는 캡처에만 써야 함: {}", mv.to_uci());
+    let captured = if mv.flag() == EP_CAPTURE {
+        Piece::Pawn
+    }else{
+        board.mailbox[mv.to() as usize].unwrap()
+    };
+    let moving = board.mailbox[mv.from() as usize].unwrap();
+
+    10*PIECE_VALUE[captured as usize] - PIECE_VALUE[moving as usize]
 }
 
 #[cfg(test)]
@@ -531,5 +557,32 @@ mod tests {
 
         let r3 = iterative_deepening(&mut b, &Limits::depth(2), &mut tt, |_, _| {});
         assert_eq!(r3.score, MATE - 1);                  // 백: 1수 메이트
+    }
+
+        #[test]
+    fn move_order_groups() {
+        // 백: e4xd5(폰이 퀸 잡기), b3xb7(퀸이 폰 잡기), a7a8q(퀸 승격), 그 외 조용한 수
+        let mut b = Board::from_fen("4k3/Pp6/8/3q4/4P3/1Q6/8/4K3 w - - 0 1").unwrap();
+        let mut moves = generate_legal_moves(&mut b);
+        let find = |moves: &Vec<Move>, uci: &str| *moves.iter().find(|m| m.to_uci() == uci).unwrap();
+        let quiet = find(&moves, "e1f2");
+
+        order_moves(&b, &mut moves, Some(quiet));
+        let pos = |uci: &str| moves.iter().position(|m| m.to_uci() == uci).unwrap();
+
+        assert_eq!(pos("e1f2"), 0, "TT 수가 맨 앞");
+        assert!(pos("e4d5") < pos("b3b7"), "폰으로 퀸 잡기 > 퀸으로 폰 잡기");
+        assert!(pos("e4d5") < pos("a7a8q"), "퀸 잡기 > 퀸 승격");
+        assert!(pos("a7a8q") < pos("e1f1"), "퀸 승격 > 조용한 수");
+        assert!(pos("b3b7") < pos("e1f1"), "캡처 > 조용한 수");
+    }
+
+    #[test]
+    fn worst_capture_still_before_quiet() {
+        // 킹으로 폰 잡기(MVV-LVA 최저점)도 조용한 수보다 먼저
+        let mut b = Board::from_fen("4k3/8/8/8/8/8/4p3/4K3 w - - 0 1").unwrap();
+        let mut moves = generate_legal_moves(&mut b);
+        order_moves(&b, &mut moves, None);
+        assert_eq!(moves[0].to_uci(), "e1e2");
     }
 }

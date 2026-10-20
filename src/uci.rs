@@ -116,6 +116,10 @@ impl Uci {
                 vec![]
             },
             "state" => self.handle_state(),
+            "print" => {
+                self.board.print();
+                vec![]
+            },
             _ =>{
                 vec![]
             }

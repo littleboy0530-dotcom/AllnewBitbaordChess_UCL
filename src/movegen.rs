@@ -20,7 +20,12 @@ pub fn is_attacked(board: &Board, sq: Square, by: Color) -> bool {
     }
     false
 }
-
+/// make_move 직후에 부른다: 방금 둔 쪽의 킹이 공격받지 않으면 true
+pub fn last_move_was_legal(board: &Board) -> bool {
+    let mover = board.side.flip();   // make 후에는 차례가 넘어가 있으니, 방금 둔 쪽은 반대편
+    let king_sq = board.pieces[mover as usize][Piece::King as usize].trailing_zeros() as Square;
+    !is_attacked(board, king_sq, board.side)
+}
 /// 둘 차례인 쪽의 유사 합법수를 list에 모두 추가
 pub fn generate_moves(board: &Board, list: &mut Vec<Move>) {
     generate_pawn_moves(board, list);
@@ -145,11 +150,10 @@ pub fn generate_legal_moves(board: &mut Board) -> Vec<Move> {
     list.retain(|mv| {
         
         board.make_move(*mv);
-        let king_sq = board.pieces[board.side.flip() as usize][Piece::King as usize].trailing_zeros() as Square;
-        let is_check = is_attacked(board, king_sq, board.side);
+        let legal = last_move_was_legal(board);
         board.unmake_move();
 
-        !is_check
+        legal
     });
 
     list
