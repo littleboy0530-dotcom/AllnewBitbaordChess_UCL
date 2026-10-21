@@ -10,33 +10,22 @@ mod eval;
 mod search;
 mod uci;
 mod tt;
+mod bench;
 
 use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Instant;
-use board::Board;
 use uci::Uci;
 
-fn perft_bench() {
-    let cases = [
-        ("시작 국면", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", 5),
-        ("Kiwipete", "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", 4),
-    ];
-    for (name, fen, depth) in cases {
-        let mut b = Board::from_fen(fen).unwrap();
-        let start = Instant::now();
-        let nodes = perft::perft(&mut b, depth);
-        let secs = start.elapsed().as_secs_f64();
-        println!("{} 깊이 {}: {} 노드, {:.2}초, {:.1}M 노드/초",
-                 name, depth, nodes, secs, nodes as f64 / secs / 1e6);
-    }
-}
-
 fn main() {
-    // `cargo run --release -- bench`면 perft 벤치마크, 아니면 UCI 모드
-    if std::env::args().any(|a| a == "bench") {
-        perft_bench();
+    // `bench [깊이]` → 탐색 벤치, `bench perft` → perft 벤치, 그 외에는 UCI 모드
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("bench") {
+        match args.get(2).map(String::as_str) {
+            Some("perft") => bench::run_perft_bench(),
+            Some(d) => bench::run_search_bench(d.parse().unwrap_or(bench::DEFAULT_DEPTH)),
+            None => bench::run_search_bench(bench::DEFAULT_DEPTH),
+        }
         return;
     }
 

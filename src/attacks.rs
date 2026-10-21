@@ -1,4 +1,29 @@
 use crate::types::*;
+use std::sync::LazyLock;
+
+const KNIGHT_DELTAS:[(i8, i8);8] = [(2,1),(-2,1),(-2,-1,),(2,-1),(1,2),(-1,2),(-1,-2),(1,-2)];
+const KING_DELTAS:[(i8, i8);8] = [(1,1),(-1,1),(-1,-1,),(1,-1),(1,0),(0,1),(-1,0),(0,-1)];
+const PAWN_DELTAS_BLACK:[(i8, i8);2] = [(-1,-1),(1,-1)];
+const PAWN_DELTAS_WHITE:[(i8, i8);2] = [(-1,1),(1,1)];
+
+struct LeaperTables {
+    knight: [Bitboard; 64],
+    king: [Bitboard; 64],
+    pawn: [[Bitboard; 64]; 2],   // [색][칸]
+}
+static LEAPERS: LazyLock<LeaperTables> = LazyLock::new(|| {
+    let mut knight = [0u64;64];
+    let mut king = [0u64;64];
+    let mut pawn = [[0u64;64];2];
+    for sq in 0..64 {
+        knight[sq] = leaper_attacks(sq as u8, &KNIGHT_DELTAS);
+        king[sq] = leaper_attacks(sq as u8, &KING_DELTAS);
+        pawn[Color::White as usize][sq as usize] = leaper_attacks(sq as u8, &PAWN_DELTAS_WHITE);
+        pawn[Color::Black as usize][sq as usize] = leaper_attacks(sq as u8, &PAWN_DELTAS_BLACK);
+    }
+
+    LeaperTables { knight, king, pawn }
+});
 
 /// (파일 변화, 랭크 변화) 목록대로 한 번씩 이동한 칸들 (도약형 공통 도우미)
 fn leaper_attacks(sq: Square, deltas: &[(i8, i8)]) -> Bitboard {
@@ -38,20 +63,14 @@ fn ray_attacks(sq: Square, df: i8, dr: i8, occ: Bitboard) -> Bitboard {
 }
 
 pub fn knight_attacks(sq: Square) -> Bitboard {
-    let knight_deltas = [(2,1),(-2,1),(-2,-1,),(2,-1),(1,2),(-1,2),(-1,-2),(1,-2)];
-    leaper_attacks(sq, &knight_deltas)
+    LEAPERS.knight[sq as usize]
 }
 pub fn king_attacks(sq: Square) -> Bitboard {
-    let king_deltas = [(1,1),(-1,1),(-1,-1,),(1,-1),(1,0),(0,1),(-1,0),(0,-1)];
-    leaper_attacks(sq, &king_deltas)
+    LEAPERS.king[sq as usize]
 }
 /// 폰이 '잡을 수 있는' 대각선 칸 (전진 칸이 아님). 백은 위쪽, 흑은 아래쪽
 pub fn pawn_attacks(color: Color, sq: Square) -> Bitboard {
-    let pawn_deltas = match color {
-        Color::Black => [(-1,-1),(1,-1)],
-        Color::White => [(-1,1),(1,1)],
-    };
-    leaper_attacks(sq, &pawn_deltas)
+    LEAPERS.pawn[color as usize][sq as usize]
 }
 
 pub fn rook_attacks(sq: Square, occ: Bitboard) -> Bitboard {

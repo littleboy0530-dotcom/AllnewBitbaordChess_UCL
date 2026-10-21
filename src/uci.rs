@@ -19,7 +19,7 @@ const MOVE_OVERHEAD_MS: u64 = 30;
 /// movestogo가 없을 때 가정하는 남은 수
 const DEFAULT_MOVES_TO_GO: u64 = 30;
 /// 전치 테이블 크기: 칸 2^20개 (약 100만 칸)
-const TT_BITS: u32 = 20;
+const TT_BITS: u32 = 24;
 
 /// UCI `go` 명령의 파라미터
 #[derive(Default, Debug, PartialEq)]
