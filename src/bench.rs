@@ -5,6 +5,7 @@
 //   → 속도만 바꾼 변경(매직 비트보드 등)은 노드 수가 그대로여야 하고,
 //     탐색을 바꾼 변경(LMR 등)은 노드 수가 바뀐다
 // - nps는 PC 상태에 따라 흔들리니 여러 번 재서 비교한다
+use crate::attacks::init_tables;
 use crate::board::Board;
 use crate::perft::perft;
 use crate::search::{iterative_deepening, Limits};
@@ -29,8 +30,16 @@ const POSITIONS: [(&str, &str); 10] = [
     ("킹-폰 끝내기", "8/8/8/4k3/8/3K4/4P3/8 w - - 0 1"),
 ];
 
+/// 공격 표가 준비됐는지 확인하고, 만드는 데 걸린 시간을 보여 준다 (보통 main에서 이미 만들어져 0 ms)
+fn warm_up_tables() {
+    let t = Instant::now();
+    init_tables();
+    println!("(공격 표 준비 {} ms — 측정에서 제외)", t.elapsed().as_millis());
+}
+
 /// `bench [깊이]`: 탐색 벤치마크
 pub fn run_search_bench(depth: u32) {
+    warm_up_tables();
     println!("탐색 벤치 (깊이 {}, TT 2^{}칸, 국면마다 새 TT)", depth, BENCH_TT_BITS);
     let mut total_nodes = 0u64;
     let start = Instant::now();
@@ -55,6 +64,7 @@ pub fn run_search_bench(depth: u32) {
 
 /// `bench perft`: 수 생성 속도 (탐색과 상관없이 movegen·make/unmake만)
 pub fn run_perft_bench() {
+    warm_up_tables();
     let cases = [
         ("시작 국면", POSITIONS[0].1, 5),
         ("Kiwipete", POSITIONS[2].1, 4),

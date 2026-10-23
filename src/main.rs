@@ -18,6 +18,9 @@ use std::thread;
 use uci::Uci;
 
 fn main() {
+    // 공격 표를 먼저 만들어 둔다 (uci/isready에 답하기 전에 끝나므로 대국 시계와 무관)
+    attacks::init_tables();
+
     // `bench [깊이]` → 탐색 벤치, `bench perft` → perft 벤치, 그 외에는 UCI 모드
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("bench") {

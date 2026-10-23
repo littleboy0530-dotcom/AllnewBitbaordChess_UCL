@@ -2,7 +2,7 @@ use crate::board::Board;
 use crate::types::*;
 
 /// SplitMix64: 시드에서 품질 좋은 난수열을 만드는 간단한 생성기
-const fn splitmix64(state: u64) -> (u64, u64) {
+pub const fn splitmix64(state: u64) -> (u64, u64) {
     let s = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = s;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
